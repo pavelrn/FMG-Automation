@@ -1,0 +1,117 @@
+---
+- hosts: fortimanager
+  connection: local
+  gather_facts: false
+  vars:
+    timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+    urls_from_file: "{{ lookup('file','urls.json') | from_json }}"
+  tasks:
+    - set_fact:
+        timestamp_fact: "{{ timestamp }}"
+
+    - name: Configuring logging
+      set_fact:
+        ansible_log_path: "{{ lookup('ini', 'log_path section=defaults file=ansible.cfg') }}"
+        ansible_log_path_copy: "./logs/{{ timestamp_fact }}/ansible.log"
+      run_once: true
+
+    - name: Create dir for logs (timestamp)
+      file:
+        path: ./logs/{{ timestamp_fact }}/
+        state: directory
+      run_once: true
+
+    - block:
+
+      - name: Create provider
+        set_fact:
+          fortimanager_provider:
+            host: "{{ ansible_host }}"
+            username: "{{ ansible_user }}"
+            password: "{{ ansible_password }}"
+        run_once: true
+
+      - name: LOCK THE ADOM
+        fortimgr_lock:
+          host: "{{ ansible_host }}"
+          username: "{{ ansible_user }}"
+          password: "{{ ansible_password }}"
+          adom: "{{ adom }}"
+          lock: True
+        register: session
+
+      - name: Set session Id
+        set_fact:
+          session_id: "{{ session.session_id }}"
+
+      - name: Upload URLs to FortiManager
+        fortimgr_jsonrpc_request:
+          host: "{{ ansible_host }}"
+          username: "{{ ansible_user }}"
+          password: "{{ ansible_password }}"
+          session_id: "{{ session_id }}"
+          method: update
+          params: [{
+              url: "pm/config/adom/{{ adom }}/obj/webfilter/urlfilter/",
+              data: [{
+                id: "1",
+                name: "default",
+                entries: "{{ urls_from_file }}"
+              }]
+            }]
+
+      - name: Save the config
+        fortimgr_lock:
+          host: "{{ ansible_host }}"
+          session_id: "{{ session_id }}"
+          adom: "{{ adom }}"
+          save: True
+
+      - name: Preview Install
+        fortimgr_install:
+          host: "{{ ansible_host }}"
+          username: "{{ ansible_user }}"
+          password: "{{ ansible_password }}"
+          session_id: "{{ session_id }}"
+          state: "preview"
+          adom: "{{ adom }}"
+          fortigate_name: "{{ item }}"
+          package: "{{ package }}"
+          vdom: "{{ vdom }}"
+          dst_file: "./logs/{{ timestamp_fact }}/{{ item }}_preview.txt"
+        with_items:
+          - "{{ fortigate }}"
+
+      - name: Install and Generate Revision
+        fortimgr_install:
+          host: "{{ ansible_host }}"
+          username: "{{ ansible_user }}"
+          password: "{{ ansible_password }}"
+          session_id: "{{ session_id }}"
+          state: "present"
+          adom: "{{ adom }}"
+          adom_revision_comments: "Auto generated URL filter update (Ansible)"
+          adom_revision_name: "URL filter update"
+          check_install: True
+          fortigate_name: "{{ item }}"
+          fortigate_revision_comments: "Auto generated URL filter update (Ansible)"
+          install_flags: "generate_rev"
+          package: "{{ package }}"
+          vdom: "{{ vdom }}"
+        with_items:
+          - "{{ fortigate }}"
+
+      always:
+      - name: Unlock the ADOM
+        fortimgr_lock:
+          host: "{{ ansible_host }}"
+          session_id: "{{ session_id }}"
+          adom: "{{ adom }}"
+          save: False
+          unlock: True
+        when: session_id is defined
+
+      - name: Move log file to timestamped log dir
+        connection: local
+        command: mv {{ ansible_log_path }} {{ ansible_log_path_copy }}
+        run_once: true

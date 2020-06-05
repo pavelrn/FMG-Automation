@@ -1,0 +1,6 @@
+vars/
+logs/
+ansible278/
+json/
+*.inv
+*.retry
